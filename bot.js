@@ -15,24 +15,25 @@ const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 let userSessions = {};
 
 /**
- * Функция для обращения к GPT-ассистенту
+ * Функция для обращения к GPT-ассистенту через Thread
  */
-async function getAIResponse(userId, userMessage, context = []) {
+async function getAIResponse(userId, userMessage) {
   try {
-    const messages = [
-      { role: 'system', content: 'You are a helpful, empathetic assistant trained to help with emotional and psychological issues.' },
-      ...context,
-      { role: 'user', content: userMessage },
-    ];
-
-    const completion = await openai.chat.completions.create({
+    const threadId = userSessions[userId].threadId;
+    const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
-      messages,
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant trained to help with emotional and psychological issues.' },
+        ...userSessions[userId].context,
+        { role: 'user', content: userMessage },
+      ],
+      user: userId,
+      threadId,
     });
 
-    const response = completion.choices[0].message.content;
-    userSessions[userId].context.push({ role: 'assistant', content: response });
-    return response;
+    const assistantReply = response.choices[0].message.content;
+    userSessions[userId].context.push({ role: 'assistant', content: assistantReply });
+    return assistantReply;
   } catch (error) {
     console.error(`[Ошибка GPT] ${error.message}`);
     return 'Извините, я не могу сейчас ответить. Попробуйте позже.';
@@ -46,19 +47,20 @@ bot.start(async (ctx) => {
   const userId = ctx.from.id;
   userSessions[userId] = {
     context: [],
-    step: 'problem', // Начальная стадия
+    step: 'menu',
+    threadId: `thread-${userId}-${Date.now()}`,
   };
 
   await ctx.reply(
-    `Привет! Я — бот-помощник. Расскажи, что тебя тревожит?`,
+    `Привет! Я — бот-помощник. Чем могу помочь?`,
     Markup.inlineKeyboard([
-      [Markup.button.callback('💬 Начать диалог', 'start_dialog')],
+      [Markup.button.callback('💬 Диалог', 'start_dialog'), Markup.button.callback('📓 Дневник', 'start_diary')],
     ])
   );
 });
 
 /**
- * Обработка кнопки "Начать диалог"
+ * Обработка кнопок "Диалог" и "Дневник"
  */
 bot.on('callback_query', async (ctx) => {
   const userId = ctx.from.id;
@@ -67,47 +69,53 @@ bot.on('callback_query', async (ctx) => {
   await ctx.answerCbQuery();
 
   if (callbackData === 'start_dialog') {
-    await ctx.reply('Что тебя тревожит? Расскажи подробнее.');
+    await ctx.reply('Расскажи, что тебя тревожит?');
     userSessions[userId].step = 'dialog';
+  }
+
+  if (callbackData === 'start_diary') {
+    await ctx.reply('Этот раздел пока в разработке. Ожидайте.');
   }
 });
 
 /**
- * Обработка текста пользователя
+ * Обработка текста пользователя в диалоге
  */
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
 
   if (!userSessions[userId]) {
-    userSessions[userId] = { context: [], step: 'problem' };
+    userSessions[userId] = { context: [], step: 'menu' };
   }
 
   if (userSessions[userId].step === 'dialog') {
-    // Генерация ответа от GPT
-    ctx.replyWithChatAction('typing');
-    const response = await getAIResponse(userId, userText, userSessions[userId].context);
+    // Первый этап: задаем уточняющие вопросы
+    const stepCount = userSessions[userId].context.length;
 
-    // Добавляем ответ в контекст и отправляем пользователю
-    userSessions[userId].context.push({ role: 'user', content: userText });
-    await ctx.reply(response);
+    if (stepCount < 3) {
+      ctx.replyWithChatAction('typing');
 
-    // Предлагаем упражнение и кнопки обратной связи
-    await ctx.reply(
-      'Вот техника, которая может помочь: попробуй расслабиться, сделав глубокий вдох и выдох, сосредотачиваясь на дыхании. После этого нажми одну из кнопок ниже.',
-      Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Помогло', 'helped')],
-        [Markup.button.callback('❌ Не помогло', 'not_helped')],
-        [Markup.button.callback('🤔 Немного легче', 'partially_helped')],
-      ])
-    );
-
-    userSessions[userId].step = 'feedback';
+      const assistantReply = await getAIResponse(userId, userText);
+      await ctx.reply(assistantReply);
+      userSessions[userId].context.push({ role: 'user', content: userText });
+    } else {
+      // После 3 вопросов предлагаем технику и кнопки обратной связи
+      await ctx.reply(
+        'Вот техника, которая может помочь: попробуй сосредоточиться на дыхании и сделать 10 медленных вдохов и выдохов. Как ты себя чувствуешь после этого?',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Помогло', 'helped')],
+          [Markup.button.callback('❌ Не помогло', 'not_helped')],
+          [Markup.button.callback('🤔 Немного легче', 'partially_helped')],
+        ])
+      );
+      userSessions[userId].step = 'feedback';
+    }
   }
 });
 
 /**
- * Обработка обратной связи
+ * Обработка обратной связи от кнопок
  */
 bot.on('callback_query', async (ctx) => {
   const userId = ctx.from.id;
