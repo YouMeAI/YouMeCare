@@ -1,158 +1,140 @@
-require('dotenv').config(); // Загружаем переменные окружения
+require('dotenv').config();
 
-const { Telegraf, Markup } = require('telegraf'); // Библиотека для Telegram
-const { OpenAI } = require('openai');            // Новый способ подключения к OpenAI SDK
+const { Telegraf, Markup } = require('telegraf');
+const { OpenAI } = require('openai');
 
-// Инициализация OpenAI с API-ключом из переменных окружения
+// Инициализация OpenAI с API-ключом
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY, // Использование API-ключа из .env
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-/**
- * Устанавливаем ваш токен Telegram
- */
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'ВАШ_ТЕЛЕГРАМ_ТОКЕН';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
-/**
- * Инициализация Telegram-бота
- */
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
-/**
- * Храним состояние пользователя
- */
 let userSessions = {};
 
 /**
  * Функция для обращения к GPT-ассистенту
  */
-async function getAIResponse(userMessage) {
+async function getAIResponse(userId, userMessage, context = []) {
   try {
-    console.log(`[GPT запрос] Вопрос пользователя: ${userMessage}`);
+    const messages = [
+      { role: 'system', content: 'You are a helpful, empathetic assistant trained to help with emotional and psychological issues.' },
+      ...context,
+      { role: 'user', content: userMessage },
+    ];
+
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',  // Используем модель GPT-4o-mini
-      messages: [
-        { role: 'system', content: 'You are a helpful assistant trained to help with emotional and psychological issues.' },
-        { role: 'user', content: userMessage },
-      ],
+      model: 'gpt-4o-mini',
+      messages,
     });
 
-    const gptAnswer = completion.choices[0].message.content;
-    console.log(`[GPT ответ] ${gptAnswer}`);
-    return gptAnswer;
+    const response = completion.choices[0].message.content;
+    userSessions[userId].context.push({ role: 'assistant', content: response });
+    return response;
   } catch (error) {
     console.error(`[Ошибка GPT] ${error.message}`);
-    return 'К сожалению, я не могу сейчас ответить. Попробуйте позже.';
+    return 'Извините, я не могу сейчас ответить. Попробуйте позже.';
   }
 }
 
 /**
  * Обработка команды /start
  */
-bot.start((ctx) => {
+bot.start(async (ctx) => {
   const userId = ctx.from.id;
   userSessions[userId] = {
-    step: 1,
-    status: 'basic', // По умолчанию базовый тариф
+    context: [],
+    step: 'problem', // Начальная стадия
   };
 
-  // Приветственное сообщение с кнопками
-  ctx.reply(
-    `Привет! Я — бот-помощник. Как я могу помочь?`,
+  await ctx.reply(
+    `Привет! Я — бот-помощник. Расскажи, что тебя тревожит?`,
     Markup.inlineKeyboard([
-      [Markup.button.callback('💬 Диалог', 'start_dialog'), Markup.button.callback('📓 Дневник', 'start_diary')]
+      [Markup.button.callback('💬 Начать диалог', 'start_dialog')],
     ])
   );
-  console.log(`[Start] Пользователь ${userId} запустил бота.`);
 });
 
 /**
- * Обработка кнопок "Диалог" и "Дневник"
+ * Обработка кнопки "Начать диалог"
  */
 bot.on('callback_query', async (ctx) => {
   const userId = ctx.from.id;
   const callbackData = ctx.callbackQuery.data;
 
-  await ctx.answerCbQuery(); // Отвечаем на callback, чтобы избежать таймаута
+  await ctx.answerCbQuery();
 
   if (callbackData === 'start_dialog') {
-    console.log(`[Диалог] Пользователь ${userId} начал диалог.`);
-    ctx.reply('Привет! Как ты себя чувствуешь сегодня?');
+    await ctx.reply('Что тебя тревожит? Расскажи подробнее.');
     userSessions[userId].step = 'dialog';
-  }
-
-  if (callbackData === 'start_diary') {
-    console.log(`[Дневник] Пользователь ${userId} выбрал дневник.`);
-    ctx.reply('Этот раздел пока в разработке. Ожидайте.');
   }
 });
 
 /**
- * Обработка текстовых сообщений в диалоге
+ * Обработка текста пользователя
  */
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const userText = ctx.message.text.trim();
 
+  if (!userSessions[userId]) {
+    userSessions[userId] = { context: [], step: 'problem' };
+  }
+
   if (userSessions[userId].step === 'dialog') {
-    ctx.replyWithChatAction('typing'); // Показ анимации "набирает текст"
+    // Генерация ответа от GPT
+    ctx.replyWithChatAction('typing');
+    const response = await getAIResponse(userId, userText, userSessions[userId].context);
 
-    const response = await getAIResponse(userText);
+    // Добавляем ответ в контекст и отправляем пользователю
+    userSessions[userId].context.push({ role: 'user', content: userText });
+    await ctx.reply(response);
 
-    ctx.reply(response);
-
-    // Добавляем кнопки обратной связи
-    ctx.reply(
-      'Как ты себя чувствуешь после применения техники?',
+    // Предлагаем упражнение и кнопки обратной связи
+    await ctx.reply(
+      'Вот техника, которая может помочь: попробуй расслабиться, сделав глубокий вдох и выдох, сосредотачиваясь на дыхании. После этого нажми одну из кнопок ниже.',
       Markup.inlineKeyboard([
         [Markup.button.callback('✅ Помогло', 'helped')],
         [Markup.button.callback('❌ Не помогло', 'not_helped')],
-        [Markup.button.callback('🤔 Проблема не решена полностью', 'partially_helped')]
+        [Markup.button.callback('🤔 Немного легче', 'partially_helped')],
       ])
     );
-    console.log(`[Диалог] Пользователь ${userId} получил ответ и кнопки.`);
+
+    userSessions[userId].step = 'feedback';
   }
 });
 
 /**
- * Обработка кнопок "Помогло", "Не помогло" и "Проблема не решена полностью"
+ * Обработка обратной связи
  */
 bot.on('callback_query', async (ctx) => {
   const userId = ctx.from.id;
   const callbackData = ctx.callbackQuery.data;
 
-  await ctx.answerCbQuery(); // Отвечаем на callback
+  await ctx.answerCbQuery();
 
-  switch (callbackData) {
-    case 'helped':
-      console.log(`[Обратная связь] Пользователь ${userId} выбрал "Помогло".`);
-      ctx.reply(
-        'Рад, что смог помочь! Для углубленной проработки я могу предложить подписку. Она включает доступ к психоанализу и "Дневнику чувств".',
+  if (userSessions[userId].step === 'feedback') {
+    if (callbackData === 'helped') {
+      await ctx.reply(
+        'Рад, что смог помочь! Я могу предложить подписку с неограниченными обращениями, доступом к психоанализу и "Дневнику чувств".',
         Markup.inlineKeyboard([
-          [Markup.button.callback('💳 Оформить подписку', 'subscribe')]
+          [Markup.button.callback('💳 Оформить подписку', 'subscribe')],
         ])
       );
-      break;
+    } else if (callbackData === 'not_helped' || callbackData === 'partially_helped') {
+      const message = callbackData === 'not_helped'
+        ? 'Жаль, что это не помогло. Давай попробуем что-то другое. Что именно тебе показалось сложным?'
+        : 'Рад, что немного помогло. Можем продолжить работу над улучшением. Что больше всего беспокоит сейчас?';
 
-    case 'not_helped':
-      console.log(`[Обратная связь] Пользователь ${userId} выбрал "Не помогло".`);
-      ctx.reply('Жаль, что это не сработало. Давай попробуем что-то другое. Вот новая техника: сделай глубокий вдох, сосредоточься на дыхании 1-2 минуты.');
+      await ctx.reply(message);
       userSessions[userId].step = 'dialog';
-      break;
-
-    case 'partially_helped':
-      console.log(`[Обратная связь] Пользователь ${userId} выбрал "Проблема не решена полностью".`);
-      ctx.reply('Я рад, что частично помогло. Продолжим работу и попробуем углубиться.');
-      userSessions[userId].step = 'dialog';
-      break;
-
-    case 'subscribe':
-      console.log(`[Подписка] Пользователь ${userId} выбрал подписку.`);
-      ctx.reply('Спасибо за выбор подписки! Теперь у вас неограниченные обращения и доступ к глубокому психоанализу.');
-      break;
-
-    default:
-      console.error(`[Ошибка] Неизвестный callback_data: ${callbackData}`);
+    } else if (callbackData === 'subscribe') {
+      await ctx.reply(
+        'Подписка оформлена! Теперь у вас есть доступ к неограниченному чату, психоанализу и "Дневнику чувств".'
+      );
+    }
   }
 });
 
