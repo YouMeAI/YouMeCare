@@ -27,7 +27,7 @@ async function getAIResponse(userId, userMessage) {
         ...userSessions[userId].context,
         { role: 'user', content: userMessage },
       ],
-      user: userId,
+      user: String(userId), // Преобразуем userId в строку
       threadId,
     });
 
