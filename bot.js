@@ -27,7 +27,7 @@ async function getAIResponse(userId, userMessage) {
         ...userSessions[userId].context,
         { role: 'user', content: userMessage },
       ],
-      user: String(userId), // Преобразуем userId в строку
+      user: String(userId),
       threadId,
     });
 
@@ -48,7 +48,7 @@ bot.start(async (ctx) => {
   userSessions[userId] = {
     context: [],
     step: 'menu',
-    threadId: `thread-${userId}-${Date.now()}`,
+    
   };
 
   await ctx.reply(
